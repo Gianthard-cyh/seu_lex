@@ -23,7 +23,11 @@ export async function compile(inputFile: string, outputFile?: string): Promise<v
     const merged = merge(nfas, spec.rules);
 
     // 简化为 DFA
-    const dfa = simplify(merged);
+    const dfaBefore = subsetConstruction(merged);
+    console.log(`DFA states before minimization: ${dfaBefore.states.length}, startStateId: ${dfaBefore.startStateId}`);
+
+    const dfa = minimize(dfaBefore);
+    console.log(`DFA states after minimization: ${dfa.states.length}, startStateId: ${dfa.startStateId}`);
 
     // 生成代码
     const output = outputFile || 'lex.yy.c';

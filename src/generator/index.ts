@@ -42,8 +42,14 @@ export function generateToString(dfa: DFA, spec: LexSpec): string {
 #include <stdlib.h>
 #include <string.h>
 
+/* ===== SeuLex Runtime Definitions ===== */
+#include "yydefs.h"
+
 /* ===== User Header ===== */
 ${parts.header}
+
+/* ===== Forward Declarations (from trailer) ===== */
+${generateForwardDecls(spec)}
 
 /* ===== Definitions ===== */
 #define YY_NUM_STATES ${dfa.states.length}
@@ -58,6 +64,7 @@ ${parts.acceptTable}
 char *yytext = NULL;
 int yyleng = 0;
 FILE *yyin = NULL;
+FILE *yyout = NULL;
 static char yy_buffer[8192];
 static char *yy_buf_pos = yy_buffer;
 static int yy_buf_end = 0;
@@ -84,6 +91,23 @@ static int yy_at_eof(void) {
     return yy_buf_filled == 0;
 }
 
+/* Flex compatibility functions */
+int input(void) {
+    return yy_getchar();
+}
+
+void unput(int c) {
+    if (yy_buf_pos > yy_buffer) {
+        yy_buf_pos--;
+        *yy_buf_pos = c;
+    }
+}
+
+void output(int c) {
+    if (!yyout) yyout = stdout;
+    fputc(c, yyout);
+}
+
 /* ===== Lexer Function ===== */
 int yylex(void) {
     int state = ${dfa.startStateId};
@@ -94,40 +118,49 @@ int yylex(void) {
     if (!yyin) yyin = stdin;
 
     while (1) {
-        int c = yy_getchar();
-        int next = (c == EOF) ? -1 : yy_next[state][(unsigned char)c];
+        /* 重置匹配状态 */
+        start = yy_buf_pos;
+        last_accept_pos = -1;
+        last_accept_state = -1;
+        state = ${dfa.startStateId};
 
-        if (next == -1) {
-            /* 无转移，回退到最近接受状态 */
-            if (last_accept_state != -1) {
-                /* 回退到接受位置 */
-                while (yy_buf_pos > yy_buffer + last_accept_pos) {
-                    yy_ungetchar();
-                }
-                yyleng = last_accept_pos - (start - yy_buffer);
-                yytext = malloc(yyleng + 1);
-                memcpy(yytext, start, yyleng);
-                yytext[yyleng] = '\\0';
+        while (1) {
+            int c = yy_getchar();
+            int next = (c == EOF) ? -1 : yy_next[state][(unsigned char)c];
 
-                switch (yy_accept[last_accept_state]) {
+            if (next == -1) {
+                /* 无转移，回退到最近接受状态 */
+                if (last_accept_state != -1) {
+                    /* 回退到接受位置 */
+                    while (yy_buf_pos > yy_buffer + last_accept_pos) {
+                        yy_ungetchar();
+                    }
+                    yyleng = last_accept_pos - (start - yy_buffer);
+                    yytext = malloc(yyleng + 1);
+                    memcpy(yytext, start, yyleng);
+                    yytext[yyleng] = '\\0';
+
+                    switch (yy_accept[last_accept_state]) {
 ${parts.actions}
-                    default: return 0;
+                        default: return 0;
+                    }
+                    break; /* 继续外层循环 */
+                } else if (c == EOF) {
+                    return 0; /* EOF */
+                } else {
+                    /* 错误：无法识别的字符 */
+                    fprintf(stderr, "Error: unexpected character '\\%c'\\n", c);
+                    return -1;
                 }
-            } else if (c == EOF) {
-                return 0; /* EOF */
-            } else {
-                /* 错误：无法识别的字符 */
-                fprintf(stderr, "Error: unexpected character '\\%c'\\n", c);
-                return -1;
             }
-        }
 
-        if (yy_accept[next]) {
-            last_accept_state = next;
-            last_accept_pos = yy_buf_pos - yy_buffer;
-        }
+            if (yy_accept[next]) {
+                last_accept_state = next;
+                last_accept_pos = yy_buf_pos - yy_buffer;
+            }
 
-        state = next;
+            state = next;
+        }
     }
 }
 
@@ -184,8 +217,9 @@ function generateActions(spec: LexSpec): string {
     const lines: string[] = [];
 
     for (let i = 0; i < spec.rules.length; i++) {
+        const action = spec.rules[i].action.trim();
         lines.push(`                    case ${i + 1}:`);
-        lines.push(`                        ${spec.rules[i].action}`);
+        lines.push(`                        ${action}`);
         lines.push(`                        break;`);
     }
 
@@ -202,4 +236,32 @@ export async function generateWithOptions(
     const code = generateToString(dfa, spec);
     const { writeFile } = await import('fs/promises');
     await writeFile(outputFile, code);
+}
+
+// 生成前向声明，处理 yacc 兼容性
+function generateForwardDecls(spec: LexSpec): string {
+    const decls: string[] = [];
+    const defined = new Set<string>();
+
+    // 收集所有动作代码和 trailer 中的标识符
+    const allCode = [...spec.rules.map(r => r.action), spec.trailer].join('\n');
+
+    // 检查 trailer 中定义的用户函数（需要在 action 中前向声明）
+    if (allCode.includes('comment(') && !spec.header.includes('void comment(')) {
+        decls.push('void comment(void);');
+    }
+    if (allCode.includes('count(') && !spec.header.includes('void count(')) {
+        decls.push('void count(void);');
+    }
+    if (allCode.includes('check_type(') && !spec.header.includes('int check_type(')) {
+        decls.push('int check_type(void);');
+    }
+    if (allCode.includes('yywrap(') && !spec.header.includes('int yywrap(')) {
+        decls.push('int yywrap(void);');
+    }
+    if (allCode.includes('error(') && !spec.header.includes('void error(')) {
+        decls.push('void error(const char *);');
+    }
+
+    return decls.join('\n');
 }

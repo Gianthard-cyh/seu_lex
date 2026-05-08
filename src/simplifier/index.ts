@@ -275,8 +275,29 @@ function rebuildDFA(
 
     const groupToNewId = new Map<number, number>();
 
-    // 创建新状态
+    // Find which group contains the start state
+    const oldStartGroup = partition.get(oldDFA.startStateId)!;
+
+    // Create new states
+    // We want the start state's group to get ID 0, so we process it first
+    // and swap with group 0 if necessary
+    const groupOrder: number[] = [];
+    const visited = new Set<number>();
+
+    // Start state's group first
+    groupOrder.push(oldStartGroup);
+    visited.add(oldStartGroup);
+
+    // Then all other groups
     for (let g = 0; g < groups.length; g++) {
+        if (!visited.has(g)) {
+            groupOrder.push(g);
+            visited.add(g);
+        }
+    }
+
+    // Create states in the custom order
+    for (const g of groupOrder) {
         const newId = newDFA.addState(new Set());
         groupToNewId.set(g, newId);
 
@@ -286,11 +307,10 @@ function rebuildDFA(
         newDFA.states[newId].acceptRule = oldState.acceptRule;
     }
 
-    // 设置起始状态
-    const oldStartGroup = partition.get(oldDFA.startStateId)!;
-    newDFA.startStateId = groupToNewId.get(oldStartGroup)!;
+    // Set start state to 0
+    newDFA.startStateId = 0;
 
-    // 创建转移
+    // Create transitions
     for (let g = 0; g < groups.length; g++) {
         const fromNewId = groupToNewId.get(g)!;
         const firstStateId = Array.from(groups[g])[0];

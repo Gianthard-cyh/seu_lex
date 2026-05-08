@@ -9,7 +9,9 @@ export function load(filename: string): LexSpec {
 }
 
 export function loadFromString(content: string, filename?: string): LexSpec {
-    const lines = content.split('\n');
+    // Normalize line endings: remove \r from Windows-style line endings
+    const normalized = content.replace(/\r\n/g, '\n');
+    const lines = normalized.split('\n');
 
     // 找到 %% 分隔符的位置
     const separatorIndices: number[] = [];
@@ -84,9 +86,13 @@ function parseDefinitions(lines: string[]): { header: string; definitions: Defin
         // 解析宏定义: NAME definition
         const match = trimmed.match(/^(\w+)\s+(.+)$/);
         if (match) {
+            // Strip C-style comments from definition
+            let def = match[2].replace(/\/\*.*?\*\//g, '').trim();
+            // Strip C++ style comments too
+            def = def.replace(/\/\/.*$/, '').trim();
             definitions.push({
                 name: match[1],
-                definition: match[2]
+                definition: def
             });
         }
     }
@@ -98,40 +104,103 @@ function parseRules(lines: string[]): Rule[] {
     const rules: Rule[] = [];
 
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
+        // Strip C-style and C++-style comments before processing
+        let line = lines[i].replace(/\/\*.*?\*\//g, '');
+        line = line.replace(/\/\/.*$/, '');
+        line = line.trim();
         if (line === '' || line.startsWith('/*') || line.startsWith('//')) {
             continue;
         }
 
-        // 匹配规则: pattern { action }
-        const match = line.match(/^(\S+)\s+\{(.*)\}$/);
-        if (match) {
+        // Find the action: the last { ... } at the end of the line
+        // Pattern: everything before the action, Action: content inside { }
+        let pattern: string | null = null;
+        let action: string | null = null;
+
+        // Find last opening brace that has a matching closing brace at end
+        // Need to handle quotes to avoid counting } inside strings like ("}"|"<%")
+        let braceDepth = 0;
+        let lastOpenBrace = -1;
+        let matchingCloseBrace = -1;
+        let inQuote = false;
+        let quoteChar = '';
+
+        for (let j = line.length - 1; j >= 0; j--) {
+            const char = line[j];
+
+            // Handle quotes
+            if (char === '"' || char === "'") {
+                if (!inQuote) {
+                    inQuote = true;
+                    quoteChar = char;
+                } else if (quoteChar === char) {
+                    inQuote = false;
+                    quoteChar = '';
+                }
+                continue;
+            }
+
+            if (inQuote) continue;
+
+            if (char === '}') {
+                if (braceDepth === 0) {
+                    matchingCloseBrace = j;
+                }
+                braceDepth++;
+            } else if (char === '{') {
+                braceDepth--;
+                if (braceDepth === 0) {
+                    lastOpenBrace = j;
+                    break;
+                }
+            }
+        }
+
+        if (lastOpenBrace > 0 && matchingCloseBrace > lastOpenBrace) {
+            pattern = line.substring(0, lastOpenBrace).trim();
+            action = line.substring(lastOpenBrace + 1, matchingCloseBrace).trim();
+        }
+
+        if (pattern && action !== null) {
             rules.push({
-                pattern: match[1],
-                action: match[2].trim(),
+                pattern,
+                action,
                 lineNo: i + 1,
                 priority: rules.length
             });
         } else if (line.includes('{')) {
             // 处理多行动作（简化版）
-            const patternMatch = line.match(/^(\S+)\s+\{/);
-            if (patternMatch) {
-                const pattern = patternMatch[1];
-                let action = line.substring(line.indexOf('{') + 1);
+            // Find first space followed by { to get pattern end
+            let patternEnd = -1;
+            for (let j = 0; j < line.length - 1; j++) {
+                if (line[j] === ' ' && line[j + 1] === '{') {
+                    patternEnd = j;
+                    break;
+                }
+            }
+
+            if (patternEnd === -1) {
+                // Try to find first {
+                patternEnd = line.indexOf('{');
+            }
+
+            if (patternEnd > 0) {
+                const pat = line.substring(0, patternEnd).trim();
+                let act = line.substring(line.indexOf('{') + 1);
                 let j = i;
 
                 // 寻找闭合的 }
-                while (!action.includes('}') && j < lines.length - 1) {
+                while (!act.includes('}') && j < lines.length - 1) {
                     j++;
-                    action += '\n' + lines[j];
+                    act += '\n' + lines[j];
                 }
 
-                const closeIdx = action.indexOf('}');
+                const closeIdx = act.indexOf('}');
                 if (closeIdx !== -1) {
-                    action = action.substring(0, closeIdx);
+                    act = act.substring(0, closeIdx);
                     rules.push({
-                        pattern,
-                        action: action.trim(),
+                        pattern: pat,
+                        action: act.trim(),
                         lineNo: i + 1,
                         priority: rules.length
                     });
@@ -145,30 +214,106 @@ function parseRules(lines: string[]): Rule[] {
 }
 
 export function expandMacros(pattern: string, definitions: Definition[]): string {
-    // 创建 name -> definition 的映射
     const defMap = new Map(definitions.map(d => [d.name, d.definition]));
 
+    // 递归展开宏
+    function expandOnce(input: string): string {
+        let result = '';
+        let i = 0;
+
+        while (i < input.length) {
+            const char = input[i];
+
+            // 处理双引号包裹的字面量
+            if (char === '"') {
+                let j = i + 1;
+                let escaped = false;
+                while (j < input.length) {
+                    if (input[j] === '\\' && !escaped) {
+                        escaped = true;
+                    } else if (input[j] === '"' && !escaped) {
+                        break;
+                    } else {
+                        escaped = false;
+                    }
+                    j++;
+                }
+
+                if (j < input.length) {
+                    const content = input.slice(i + 1, j);
+                    result += processEscapes(content);
+                    i = j + 1;
+                    continue;
+                }
+            }
+
+            // 处理宏定义 {NAME}
+            if (char === '{') {
+                const endBrace = input.indexOf('}', i);
+                if (endBrace !== -1) {
+                    const name = input.slice(i + 1, endBrace);
+                    if (defMap.has(name)) {
+                        result += defMap.get(name)!;
+                        i = endBrace + 1;
+                        continue;
+                    }
+                }
+            }
+
+            result += char;
+            i++;
+        }
+
+        return result;
+    }
+
+    // 迭代展开直到没有变化
     let result = pattern;
     let changed = true;
     let iterations = 0;
     const MAX_ITERATIONS = 100;
 
-    // 迭代展开直到没有变化
     while (changed && iterations < MAX_ITERATIONS) {
-        changed = false;
+        const newResult = expandOnce(result);
+        changed = newResult !== result;
+        result = newResult;
         iterations++;
-
-        // 匹配 {NAME} 模式
-        const macroRegex = /\{(\w+)\}/g;
-        result = result.replace(macroRegex, (match, name) => {
-            if (defMap.has(name)) {
-                changed = true;
-                return defMap.get(name)!;
-            }
-            // 未定义的宏，保持原样（会在后续解析时作为字面量处理）
-            return match;
-        });
     }
 
+    return result;
+}
+
+// 处理转义字符
+function processEscapes(content: string): string {
+    let result = '';
+    let i = 0;
+    while (i < content.length) {
+        if (content[i] === '\\' && i + 1 < content.length) {
+            const next = content[i + 1];
+            // 保留常见的正则转义字符
+            if ('*+?[]()|{}.^$\\/,'.includes(next)) {
+                result += '\\' + next;
+            } else if (next === 'n') {
+                result += '\n';
+            } else if (next === 't') {
+                result += '\t';
+            } else if (next === 'r') {
+                result += '\r';
+            } else if (next === '"') {
+                result += '"';
+            } else {
+                result += next;
+            }
+            i += 2;
+        } else {
+            // 对特殊正则字符进行转义
+            if ('*+?[]()|{}.^$/,'.includes(content[i])) {
+                result += '\\' + content[i];
+            } else {
+                result += content[i];
+            }
+            i++;
+        }
+    }
     return result;
 }
