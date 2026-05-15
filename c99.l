@@ -1,17 +1,20 @@
-/* Regular Definition，不构成完整的词法单元，没有对应的action */
 D			[0-9]
-L			[a-zA-Z_]   /* 字母 */
-H			[a-fA-F0-9]  /* 十六进制数 */
-E			([Ee][+-]?{D}+)    /* 十进制数的指数部分 */
-P           ([Pp][+-]?{D}+)  /* 十六进制数的指数部分 */
-FS			(f|F|l|L)     /*浮点数后缀*/
-IS          ((u|U)|(u|U)?(l|L|ll|LL)|(l|L|ll|LL)(u|U))  /*无符号数，长整数的后缀 */
+L			[a-zA-Z_]
+H			[a-fA-F0-9]
+E			([Ee][+-]?{D}+)
+P                       ([Pp][+-]?{D}+)
+FS			(f|F|l|L)
+IS                      ((u|U)|(u|U)?(l|L|ll|LL)|(l|L|ll|LL)(u|U))
 
 %{
 #include <stdio.h>
+#include <stdlib.h>
 #include "y.tab.h"
 
-void count(void);   /* 计算词法元素所占用的列，在规则部分被使用，函数体在第二个%%之后 */
+void count(void);
+void comment(void);
+int check_type(void);
+void error(const char *msg);
 %}
 
 %%
@@ -57,22 +60,22 @@ void count(void);   /* 计算词法元素所占用的列，在规则部分被使
 "volatile"		{ count(); return(VOLATILE); }
 "while"			{ count(); return(WHILE); }
 
-{L}({L}|{D})*		{ count(); return(check_type()); }                   /* identifier, 也可能是保留字*/
+{L}({L}|{D})*		{ count(); return(check_type()); }
 
-0[xX]{H}+{IS}?		{ count(); return(CONSTANT); }             /* 16进制数 */
-0[0-7]*{IS}?		{ count(); return(CONSTANT); }             /* 8进制数 */
-[1-9]{D}*{IS}?		{ count(); return(CONSTANT); }             /* 10进制数 */
-L?'(\\.|[^\\'\n])+'	{ count(); return(CONSTANT); }             // 6.4.4.4 Character constants p59
+0[xX]{H}+{IS}?		{ count(); return(CONSTANT); }
+0[0-7]*{IS}?		{ count(); return(CONSTANT); }
+[1-9]{D}*{IS}?		{ count(); return(CONSTANT); }
+L?'(\\.|[^\\'\n])+'	{ count(); return(CONSTANT); }
 
-{D}+{E}{FS}?		{ count(); return(CONSTANT); }              /* 10进制浮点数 */  
-{D}*"."{D}+{E}?{FS}?	{ count(); return(CONSTANT); }          /* 10进制浮点数 */  
-{D}+"."{D}*{E}?{FS}?	{ count(); return(CONSTANT); }          /* 10进制浮点数 */  
-0[xX]{H}+{P}{FS}?	{ count(); return(CONSTANT); }               /* 16进制浮点数 */  
-0[xX]{H}*"."{H}+{P}?{FS}?     { count(); return(CONSTANT); }     /* 16进制浮点数 */ 
-0[xX]{H}+"."{H}*{P}?{FS}?     { count(); return(CONSTANT); }     /* 16进制浮点数 */ 
+{D}+{E}{FS}?		{ count(); return(CONSTANT); }
+{D}*"."{D}+{E}?{FS}?	{ count(); return(CONSTANT); }
+{D}+"."{D}*{E}?{FS}?	{ count(); return(CONSTANT); }
+0[xX]{H}+{P}{FS}?	{ count(); return(CONSTANT); }
+0[xX]{H}*"."{H}+{P}?{FS}?     { count(); return(CONSTANT); }
+0[xX]{H}+"."{H}*{P}?{FS}?     { count(); return(CONSTANT); }
 
 
-L?\"(\\.|[^\\"\n])*\"	{ count(); return(STRING_LITERAL); }  // 6.4.5 String literals p62
+L?\"(\\.|[^\\"\n])*\"	{ count(); return(STRING_LITERAL); }
 
 "..."			{ count(); return(ELLIPSIS); }
 ">>="			{ count(); return(RIGHT_ASSIGN); }
@@ -131,18 +134,14 @@ int yywrap(void)
 	return 1;
 }
 
-void error(const char *msg) {
-    fprintf(stderr, "error: %s\n", msg);
-    exit(1);
-}
 
 void comment(void)
 {
-	char c, prev = 0;   /* 存放当前和前一个字符 */
+	char c, prev = 0;
   
 	while ((c = input()) != 0)      /* (EOF maps to 0) */
 	{
-		if (c == '/' && prev == '*')     /* 读到了注释的右边界 */
+		if (c == '/' && prev == '*')
 			return;
 		prev = c;
 	}
@@ -152,11 +151,11 @@ void comment(void)
 
 int column = 0;
 
-void count(void) /*记录当前位于第几列*/
+void count(void)
 {
 	int i;
 
-	for (i = 0; yytext[i] != '\0'; i++)         /* '\0'表示结束符或空格符*/
+	for (i = 0; yytext[i] != '\0'; i++)
 		if (yytext[i] == '\n')
 			column = 0;
 		else if (yytext[i] == '\t')

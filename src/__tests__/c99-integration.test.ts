@@ -10,16 +10,16 @@ describe('C99 Lexer Integration', () => {
     test('加载 c99.l 规范', () => {
         const spec = load('./c99.l');
         expect(spec.definitions).toHaveLength(7);  // D, L, H, E, P, FS, IS
-        expect(spec.rules).toHaveLength(98);
+        expect(spec.rules).toHaveLength(99);  // 99 rules including // comment
         expect(spec.header).toContain('y.tab.h');
     });
 
     test('解析所有规则为正则 NFA', () => {
         const spec = load('./c99.l');
         const nfas = spec.rules.map(r => parse(r.pattern));
-        expect(nfas).toHaveLength(98);
+        expect(nfas).toHaveLength(99);
         expect(nfas[0]).toBeDefined();
-        expect(nfas[97]).toBeDefined();
+        expect(nfas[98]).toBeDefined();
     });
 
     test('合并 NFA', () => {

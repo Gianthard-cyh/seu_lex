@@ -104,9 +104,9 @@ function parseRules(lines: string[]): Rule[] {
     const rules: Rule[] = [];
 
     for (let i = 0; i < lines.length; i++) {
-        // Strip C-style and C++-style comments before processing
-        let line = lines[i].replace(/\/\*.*?\*\//g, '');
-        line = line.replace(/\/\/.*$/, '');
+        let line = lines[i];
+
+        // Skip pure comment lines
         line = line.trim();
         if (line === '' || line.startsWith('/*') || line.startsWith('//')) {
             continue;
@@ -157,8 +157,13 @@ function parseRules(lines: string[]): Rule[] {
         }
 
         if (lastOpenBrace > 0 && matchingCloseBrace > lastOpenBrace) {
-            pattern = line.substring(0, lastOpenBrace).trim();
+            // Extract pattern and action
+            const rawPattern = line.substring(0, lastOpenBrace).trim();
             action = line.substring(lastOpenBrace + 1, matchingCloseBrace).trim();
+
+            // Now strip C-style and C++-style comments from the pattern only
+            // Be careful not to strip // inside quoted strings like "//"
+            pattern = stripPatternComments(rawPattern);
         }
 
         if (pattern && action !== null) {
@@ -213,30 +218,87 @@ function parseRules(lines: string[]): Rule[] {
     return rules;
 }
 
+// Strip C-style and C++-style comments from pattern, respecting quoted strings
+function stripPatternComments(pattern: string): string {
+    let result = '';
+    let i = 0;
+    let inQuote = false;
+    let quoteChar = '';
+    let escaped = false;
+
+    while (i < pattern.length) {
+        const char = pattern[i];
+
+        // Handle escape sequences
+        if (char === '\\' && !escaped) {
+            escaped = true;
+            result += char;
+            i++;
+            continue;
+        }
+
+        // Handle quotes
+        if ((char === '"' || char === "'") && !escaped) {
+            if (!inQuote) {
+                inQuote = true;
+                quoteChar = char;
+            } else if (quoteChar === char) {
+                inQuote = false;
+                quoteChar = '';
+            }
+            result += char;
+            i++;
+            escaped = false;
+            continue;
+        }
+
+        // Skip C-style comments (only outside quotes)
+        if (!inQuote && char === '/' && i + 1 < pattern.length && pattern[i + 1] === '*') {
+            // Find end of comment
+            const endComment = pattern.indexOf('*/', i + 2);
+            if (endComment !== -1) {
+                i = endComment + 2;
+                continue;
+            }
+        }
+
+        // Skip C++-style comments (only outside quotes)
+        if (!inQuote && char === '/' && i + 1 < pattern.length && pattern[i + 1] === '/') {
+            // Skip to end of line
+            break;
+        }
+
+        result += char;
+        i++;
+        escaped = false;
+    }
+
+    return result.trim();
+}
+
 export function expandMacros(pattern: string, definitions: Definition[]): string {
     const defMap = new Map(definitions.map(d => [d.name, d.definition]));
 
-    // 递归展开宏
-    function expandOnce(input: string): string {
+    // Stage 1: Escape metacharacters in the original pattern (before macro expansion)
+    function escapeOriginalPattern(input: string): string {
         let result = '';
         let i = 0;
 
         while (i < input.length) {
             const char = input[i];
 
-            // 处理双引号包裹的字面量
+            // Handle quoted string literals
             if (char === '"') {
                 let j = i + 1;
-                let escaped = false;
                 while (j < input.length) {
-                    if (input[j] === '\\' && !escaped) {
-                        escaped = true;
-                    } else if (input[j] === '"' && !escaped) {
+                    if (input[j] === '\\' && j + 1 < input.length) {
+                        j += 2;
+                        continue;
+                    } else if (input[j] === '"') {
                         break;
                     } else {
-                        escaped = false;
+                        j++;
                     }
-                    j++;
                 }
 
                 if (j < input.length) {
@@ -247,7 +309,62 @@ export function expandMacros(pattern: string, definitions: Definition[]): string
                 }
             }
 
-            // 处理宏定义 {NAME}
+            // Handle macro references {NAME} - don't escape, keep as-is
+            if (char === '{') {
+                const endBrace = input.indexOf('}', i);
+                if (endBrace !== -1) {
+                    const name = input.slice(i + 1, endBrace);
+                    if (defMap.has(name)) {
+                        result += input.slice(i, endBrace + 1);
+                        i = endBrace + 1;
+                        continue;
+                    }
+                }
+            }
+
+            // Handle escape sequences
+            if (char === '\\' && i + 1 < input.length) {
+                const next = input[i + 1];
+                if (next === 'n') {
+                    result += '\\n';
+                    i += 2;
+                    continue;
+                } else if (next === 't') {
+                    result += '\\t';
+                    i += 2;
+                    continue;
+                } else if (next === 'r') {
+                    result += '\\r';
+                    i += 2;
+                    continue;
+                } else if (next === '"') {
+                    result += '"';
+                    i += 2;
+                    continue;
+                } else if (next === '\\') {
+                    result += '\\';
+                    i += 2;
+                    continue;
+                }
+            }
+
+            // For content outside quotes: keep as-is (it's regex)
+            // Escape sequences like \n are already handled above
+            result += char;
+            i++;
+        }
+
+        return result;
+    }
+
+    // Stage 2: Pure macro expansion, no escaping
+    function expandMacrosOnly(input: string): string {
+        let result = '';
+        let i = 0;
+
+        while (i < input.length) {
+            const char = input[i];
+
             if (char === '{') {
                 const endBrace = input.indexOf('}', i);
                 if (endBrace !== -1) {
@@ -267,14 +384,14 @@ export function expandMacros(pattern: string, definitions: Definition[]): string
         return result;
     }
 
-    // 迭代展开直到没有变化
-    let result = pattern;
+    // Execute: first escape, then recursively expand macros
+    let result = escapeOriginalPattern(pattern);
     let changed = true;
     let iterations = 0;
     const MAX_ITERATIONS = 100;
 
     while (changed && iterations < MAX_ITERATIONS) {
-        const newResult = expandOnce(result);
+        const newResult = expandMacrosOnly(result);
         changed = newResult !== result;
         result = newResult;
         iterations++;
@@ -283,35 +400,32 @@ export function expandMacros(pattern: string, definitions: Definition[]): string
     return result;
 }
 
-// 处理转义字符
+// Process escapes and escape metacharacters for quoted content
 function processEscapes(content: string): string {
     let result = '';
     let i = 0;
     while (i < content.length) {
         if (content[i] === '\\' && i + 1 < content.length) {
             const next = content[i + 1];
-            // 保留常见的正则转义字符
-            if ('*+?[]()|{}.^$\\/,'.includes(next)) {
-                result += '\\' + next;
-            } else if (next === 'n') {
-                result += '\n';
+            if (next === 'n') {
+                result += '\\n';
             } else if (next === 't') {
-                result += '\t';
+                result += '\\t';
             } else if (next === 'r') {
-                result += '\r';
+                result += '\\r';
             } else if (next === '"') {
                 result += '"';
+            } else if (next === '\\') {
+                result += '\\';
             } else {
-                result += next;
+                result += '\\\\' + next;
             }
             i += 2;
+        } else if ('*+?[]()|{}.^$/'.includes(content[i])) {
+            result += '\\' + content[i];
+            i++;
         } else {
-            // 对特殊正则字符进行转义
-            if ('*+?[]()|{}.^$/,'.includes(content[i])) {
-                result += '\\' + content[i];
-            } else {
-                result += content[i];
-            }
+            result += content[i];
             i++;
         }
     }

@@ -147,6 +147,11 @@ export class RegexParser {
                 this.advance();
                 return { type: 'char', char };
 
+            case 'COMMA':
+                // Comma as literal character (ASCII 44)
+                this.advance();
+                return { type: 'char', char: 44 };
+
             case 'CLASS':
                 const cls = this.current.value;
                 this.advance();

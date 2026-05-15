@@ -55,12 +55,16 @@ export function move(states: Set<State>, char: number): Set<State> {
 // 收集状态集合中所有可能的转移字符
 function collectPossibleChars(states: Set<State>): number[] {
     const chars = new Set<number>();
+    let hasNegatedClass = false;
 
     for (const state of states) {
         for (const trans of state.transitions) {
             if (trans.type === 'char') {
                 chars.add(trans.char);
             } else if (trans.type === 'class') {
+                if (trans.class.negated) {
+                    hasNegatedClass = true;
+                }
                 for (const single of trans.class.singles) {
                     chars.add(single);
                 }
@@ -70,6 +74,14 @@ function collectPossibleChars(states: Set<State>): number[] {
                     }
                 }
             }
+        }
+    }
+
+    // 如果存在否定字符类，需要包含所有可能的字符（0-255）
+    // 因为否定类可以匹配任何不在集合中的字符
+    if (hasNegatedClass) {
+        for (let i = 0; i < 256; i++) {
+            chars.add(i);
         }
     }
 
