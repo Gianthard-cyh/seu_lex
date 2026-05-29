@@ -1,0 +1,8 @@
+STRING: "hello world"
+IDENT: foo
+IDENT: bar
+STRING: "string with \"escaped quotes\""
+STRING: "string with /* comment */ inside"
+IDENT: baz
+IDENT: identifier123
+STRING: "path\\to\\file"

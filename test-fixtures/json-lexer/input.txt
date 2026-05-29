@@ -1,0 +1,1 @@
+{"name": "test", "value": 123, "active": true, "nested": {"arr": [1, 2.5, -3e10]}}

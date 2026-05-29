@@ -1,0 +1,8 @@
+KEYWORD:if
+ID:x
+ID:then
+KEYWORD:return
+NUM:0
+KEYWORD:else
+KEYWORD:while
+ID:y

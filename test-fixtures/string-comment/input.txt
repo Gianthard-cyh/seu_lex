@@ -1,0 +1,19 @@
+"hello world"
+// this is a single line comment
+foo
+/* this is a
+   multi-line comment */
+bar
+"string with \\"escaped quotes\\""
+/* comment with "string" inside */
+"string with /* comment */ inside"
+baz
+// comment at end of line
+
+// nested /* comment */ inside single line
+/* outer /* inner */ outer */
+identifier123
+"path\\to\\file"
+//
+/**/
+/* just a comment */
